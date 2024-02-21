@@ -6,6 +6,7 @@ import Control.Monad.Reader ( asks )
 
 import Data.Generics
 import Data.List
+import qualified Data.List.NonEmpty as NE
 import Data.Maybe ( fromMaybe, isJust )
 import qualified Data.Text as Text
 
@@ -16,13 +17,17 @@ import Agda.Compiler.Backend
 import Agda.Compiler.Common
 
 import Agda.Syntax.Common
+import qualified Agda.Syntax.Concrete as C
 import Agda.Syntax.Internal
 import Agda.Syntax.Internal.Pattern ( patternToTerm )
 import Agda.Syntax.Literal
 import Agda.Syntax.Common.Pretty ( prettyShow )
 import Agda.Syntax.Scope.Monad ( isDatatypeModule )
 
+import Agda.TypeChecking.InstanceArguments ( findInstance )
+import Agda.TypeChecking.MetaVars
 import Agda.TypeChecking.Pretty
+import Agda.TypeChecking.Reduce ( instantiate )
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope ( telView, mustBePi, piApplyM )
 import Agda.TypeChecking.Sort ( ifIsSort )
@@ -40,6 +45,7 @@ import Agda.Utils.Size ( Sized(size) )
 
 import Agda2Hs.AgdaUtils
 import Agda2Hs.Compile.Name ( compileQName )
+import Agda2Hs.Compile.RuntimeCheckUtils
 import Agda2Hs.Compile.Term ( compileTerm, usableDom )
 import Agda2Hs.Compile.Type ( compileTopLevelType, compileDom, DomOutput(..) )
 import Agda2Hs.Compile.TypeDefinition ( compileTypeDef )
@@ -151,7 +157,23 @@ compileFun' withSig def@Defn{..} = do
           =<< text "Functions defined with absurd patterns exclusively are not supported."
           <+> text "Use function `error` from the Haskell.Prelude instead."
 
-        return $ [Hs.TypeSig () [x] ty | withSig ] ++ [Hs.FunBind () cs]
+        -- Add runtime check if present
+        checks <- asks runtimeChecks
+        if null checks
+          then return $ [Hs.TypeSig () [x] ty | withSig] ++ [Hs.FunBind () cs]
+          else
+            ( do
+                let tel = map unDom . telToList . theTel $ telView' defType
+                matches <- traverse (`lookupRtc` tel) checks
+                prettyMatches <- mapM prettyTCM matches
+                let prettyFailures = zipWith (\ c m -> c ++ " : " ++ show m) checks prettyMatches
+                result <- traverse decify matches >>= traverse findDecInstances
+                rtcName <- rtcDeferName x
+                rtcMatches <- mapM rtcDeferMatch cs
+                return $
+                  createRtc x (argCount ty) (zip (zip result $ map argPlaces matches) prettyFailures) :
+                  [Hs.TypeSig () [rtcName] ty | withSig] ++ [Hs.FunBind () rtcMatches]
+            )
   where
     Function{..} = theDef
     m = qnameModule defName
@@ -161,6 +183,18 @@ compileFun' withSig def@Defn{..} = do
       TelV tel b <- telView t
       addContext tel $ ifIsSort b (\_ -> return True) (return False)
     err = "Not supported: type definition with `where` clauses"
+
+    findDecInstances :: Type -> C String
+    findDecInstances t = liftTCM $ do
+      tel <- telView defType
+      let hiddenTel = setHiding Hidden <$> theTel tel
+      (m, v) <- addContext hiddenTel $ newInstanceMeta "" t
+      findInstance m Nothing
+      sol <- instantiate v
+      return $ case sol of
+        Def n _ -> case nameCanonical $ qnameName n of
+          C.Name _ _ ps -> case NE.head ps of
+            C.Id r -> r
 
 
 compileClause :: ModuleName -> Maybe QName -> Hs.Name () -> Type -> Clause -> C (Maybe (Hs.Match ()))

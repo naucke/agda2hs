@@ -283,6 +283,9 @@ ensureNoLocals msg = unlessM (null <$> asks locals) $ genericError msg
 withLocals :: LocalDecls -> C a -> C a
 withLocals ls = local $ \e -> e { locals = ls }
 
+withRuntimeChecks :: [String] -> C a -> C a
+withRuntimeChecks rtcs = local $ \e -> e { runtimeChecks = rtcs }
+
 checkValidVarName :: Hs.Name () -> C ()
 checkValidVarName x = unless (validVarName x) $ genericDocError =<< do
   text "Invalid name for Haskell variable: " <+> text (Hs.prettyPrint x)

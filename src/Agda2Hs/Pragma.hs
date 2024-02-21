@@ -2,6 +2,7 @@ module Agda2Hs.Pragma where
 
 import Data.List ( isPrefixOf )
 import Data.Maybe ( fromMaybe )
+import Data.Text ( pack, splitOn, unpack )
 import qualified Data.Map as Map
 
 import qualified Language.Haskell.Exts.Syntax as Hs
@@ -56,16 +57,24 @@ data ParsedPragma
   | TransparentPragma
   | NewTypePragma [Hs.Deriving ()]
   | DerivePragma (Maybe (Hs.DerivStrategy ()))
+  | RuntimeCheckPragma [String]
   deriving (Eq, Show)
 
 derivePragma :: String
 derivePragma = "derive"
+
+-- Runtime checks
+rtcPragma :: String
+rtcPragma = "rtc"
 
 parseStrategy :: String -> Maybe (Hs.DerivStrategy ())
 parseStrategy "stock"    = Just (Hs.DerivStock ())
 parseStrategy "newtype"  = Just (Hs.DerivNewtype ())
 parseStrategy "anyclass" = Just (Hs.DerivAnyclass ())
 parseStrategy _          = Nothing
+
+parseRtc :: String -> [String]
+parseRtc s = map unpack $ splitOn (pack ", ") (pack s)
 
 newtypePragma :: String
 newtypePragma = "newtype"
@@ -94,6 +103,7 @@ processPragma qn = liftTCM (getUniqueCompilerPragma pragmaName qn) >>= \case
     | s == newtypePragma          -> return $ NewTypePragma []
     | s == derivePragma           -> return $ DerivePragma Nothing
     | derivePragma `isPrefixOf` s -> return $ DerivePragma (parseStrategy (drop (length derivePragma + 1) s))
+    | rtcPragma    `isPrefixOf` s -> return $ RuntimeCheckPragma $ parseRtc $ drop (length rtcPragma + 1) s
     | "deriving"   `isPrefixOf` s -> processDeriving s DefaultPragma
     | (newtypePragma ++ " deriving") `isPrefixOf` s -> processDeriving (drop (length newtypePragma + 1) s) NewTypePragma
   _ -> return $ DefaultPragma []

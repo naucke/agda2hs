@@ -86,6 +86,8 @@ data CompileEnv = CompileEnv
   -- ^ whether to ensure compiled variables are usable and visible
   , rewrites :: SpecialRules
   -- ^ Special compilation rules.
+  , runtimeChecks :: [String]
+  -- ^ Functions to use for runtime checks.
   }
 
 type Qualifier = Maybe (Maybe (Hs.ModuleName ()))

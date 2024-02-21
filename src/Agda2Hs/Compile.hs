@@ -25,7 +25,7 @@ import Agda2Hs.Compile.Function ( compileFun, checkTransparentPragma, checkInlin
 import Agda2Hs.Compile.Postulate ( compilePostulate )
 import Agda2Hs.Compile.Record ( compileRecord, checkUnboxPragma )
 import Agda2Hs.Compile.Types
-import Agda2Hs.Compile.Utils ( setCurrentRangeQ, tellExtension, primModules, isClassName )
+import Agda2Hs.Compile.Utils ( setCurrentRangeQ, tellExtension, primModules, isClassName, withRuntimeChecks )
 import Agda2Hs.Pragma
 
 
@@ -37,6 +37,7 @@ initCompileEnv tlm rewrites = CompileEnv
   , copatternsEnabled = False
   , checkVar          = False
   , rewrites          = rewrites
+  , runtimeChecks     = []
   }
 
 initCompileState :: CompileState
@@ -99,6 +100,7 @@ compile opts tlm _ def =
         (DefaultPragma _     , Axiom{}   ) -> compilePostulate def
         (DefaultPragma _     , Function{}) -> compileFun True def
         (DefaultPragma ds    , Record{}  ) -> pure <$> compileRecord (ToRecord False ds) def
+        (RuntimeCheckPragma rtcs, Function{}) -> withRuntimeChecks rtcs (compileFun True def)
 
         _ -> genericDocError =<<  text "Don't know how to compile" <+> prettyTCM (defName def)
 
