@@ -368,10 +368,17 @@ checkNoAsPatterns = \case
     checkPatternInfo i = unless (null $ patAsNames i) $
       genericDocError =<< text "not supported by agda2hs: as patterns"
 
-resolveStringName :: String -> C QName
-resolveStringName s = do
+testResolveStringName :: String -> C (Maybe QName)
+testResolveStringName s = do
   cqname <- liftTCM $ parseName noRange s
   rname <- liftTCM $ resolveName cqname
   case rname of
-    DefinedName _ aname _ -> return $ anameName aname
-    _ -> genericDocError =<< text ("Couldn't find " ++ s)
+    DefinedName _ aname _ -> return $ Just $ anameName aname
+    _ -> return Nothing
+
+resolveStringName :: String -> C QName
+resolveStringName s = do
+  name <- testResolveStringName s
+  case name of
+    Just aname -> return aname
+    Nothing -> genericDocError =<< text ("Couldn't find " ++ s)
