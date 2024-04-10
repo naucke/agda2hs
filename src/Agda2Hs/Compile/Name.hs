@@ -36,7 +36,7 @@ import Agda.TypeChecking.Warnings ( warning )
 import qualified Agda.Utils.List1 as List1
 import Agda.Utils.Monad
 import Agda.Utils.Maybe ( isJust, isNothing, whenJust, fromMaybe, caseMaybeM )
-import Agda.Utils.Monad ( whenM )
+import Agda.Utils.Monad ( ifNotM, whenM )
 
 import Agda2Hs.AgdaUtils
 import Agda2Hs.Compile.Types
@@ -126,18 +126,21 @@ compileQName f
       typeError $ CustomBackendError "agda2hs" $ P.text $
         "Symbol " ++ Hs.prettyPrint hf ++ " is missing a COMPILE pragma or rewrite rule"
 
+    modRtc <- ifNotM (emitsRtc f) (return mod) $ case mod of
+      Hs.ModuleName () s -> do
+        return $ Hs.ModuleName () $ s ++ ".PostRtc"
     currMod <- hsTopLevelModuleName <$> asks currModule
     let skipModule = mod == currMod
                   || isJust mimpBuiltin
                   || prettyShow mod0 `elem` primMonadModules
     qual <- if | skipModule -> return Unqualified
-               | otherwise  -> getQualifier (fromMaybe f parent) mod
+               | otherwise  -> getQualifier (fromMaybe f parent) modRtc
     -- we only calculate this when dealing with type operators; usually that's where 'type' prefixes are needed in imports
     namespace <- (case hf of
           Hs.Symbol _ _ -> getNamespace f
           Hs.Ident  _ _ -> return (Hs.NoNamespace ()))
     let
-      (mod', mimp) = mkImport mod qual par hf namespace
+      (mod', mimp) = mkImport modRtc qual par hf namespace
       qf = qualify mod' hf qual
 
     -- add (possibly qualified) import
@@ -150,7 +153,7 @@ compileQName f
       ++ "\nhaskell name: " ++ Hs.prettyPrint hf
       ++ "\nparent name: " ++ prettyShow parent
       ++ "\nmod0: " ++ prettyShow mod0
-      ++ "\nmodule name: " ++ Hs.prettyPrint mod
+      ++ "\nmodule name: " ++ Hs.prettyPrint modRtc
       ++ "\ncurrent module: " ++ Hs.prettyPrint currMod
       ++ "\nqualifier: " ++ prettyShow (fmap (fmap pp) qual)
       ++ "\n(qualified) haskell name: " ++ pp qf
