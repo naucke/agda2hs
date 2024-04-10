@@ -62,6 +62,7 @@ data Options = Options
   , optOutDir     :: Maybe FilePath
   , optConfigFile :: Maybe FilePath
   , optExtensions :: [Hs.Extension]
+  , optRtc        :: Bool
   , optRewrites   :: SpecialRules
   , optPrelude    :: PreludeOptions
   }
@@ -84,6 +85,8 @@ data CompileEnv = CompileEnv
   -- ^ whether we are currently compiling a where clause or pattern-matching lambda
   , copatternsEnabled :: Bool
   -- ^ whether copatterns should be allowed when compiling patterns
+  , rtc :: Bool
+  -- ^ whether runtime checks should be emitted (uncheckable names are wrapped away)
   , rewrites :: SpecialRules
   -- ^ Special compilation rules.
   }
@@ -119,14 +122,18 @@ data CompileOutput = CompileOutput
   -- ^ Haskell import statements.
   , haskellExtensions :: [Hs.KnownExtension]
   -- ^ Required language extensions.
+  , noErased :: [String]
+  -- ^ Names that can be exported as is wrt runtime checks because they have no erased arguments
+  , allCheckable :: [QName]
+  -- ^ Names that can be exported wrt runtime checks because all erased arguments are checkable
   }
 
 instance Semigroup CompileOutput where
-  CompileOutput imps exts <> CompileOutput imps' exts' =
-    CompileOutput (imps <> imps') (exts <> exts')
+  CompileOutput imps exts ers checks <> CompileOutput imps' exts' ers' checks' =
+    CompileOutput (imps <> imps') (exts <> exts') (ers <> ers') (checks <> checks')
 
 instance Monoid CompileOutput where
-  mempty = CompileOutput mempty mempty
+  mempty = CompileOutput mempty mempty mempty mempty
 
 -- | State used while compiling a single module.
 newtype CompileState = CompileState
