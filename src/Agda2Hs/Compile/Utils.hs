@@ -13,13 +13,14 @@ import qualified Data.Map as M
 import qualified Language.Haskell.Exts as Hs
 
 import Agda.Compiler.Backend hiding ( Args )
+import Agda.Interaction.BasicOps ( parseName )
 
 import Agda.Syntax.Common
 import qualified Agda.Syntax.Concrete.Name as C
 import Agda.Syntax.Internal
 import Agda.Syntax.Position ( noRange )
 import Agda.Syntax.Scope.Base
-import Agda.Syntax.Scope.Monad ( bindVariable, freshConcreteName, isDatatypeModule )
+import Agda.Syntax.Scope.Monad ( bindVariable, freshConcreteName, isDatatypeModule, resolveName )
 import Agda.Syntax.Common.Pretty ( prettyShow )
 import qualified Agda.Syntax.Common.Pretty as P
 
@@ -340,3 +341,16 @@ checkNoAsPatterns = \case
     checkPatternInfo :: PatternInfo -> C ()
     checkPatternInfo i = unless (null $ patAsNames i) $
       genericDocError =<< text "not supported by agda2hs: as patterns"
+
+testResolveStringName :: String -> C (Maybe QName)
+testResolveStringName s = do
+  cqname <- liftTCM $ parseName noRange s
+  rname <- liftTCM $ resolveName cqname
+  case rname of
+    DefinedName _ aname _ -> return $ Just $ anameName aname
+    _ -> return Nothing
+
+resolveStringName :: String -> C QName
+resolveStringName s = do
+  testResolveStringName s >>= \case
+    Just aname -> return aname
