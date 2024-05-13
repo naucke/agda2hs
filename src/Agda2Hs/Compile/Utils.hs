@@ -13,13 +13,14 @@ import qualified Data.Map as M
 import qualified Language.Haskell.Exts as Hs
 
 import Agda.Compiler.Backend hiding ( Args )
+import Agda.Interaction.BasicOps ( parseName )
 
 import Agda.Syntax.Common
 import qualified Agda.Syntax.Concrete.Name as C
 import Agda.Syntax.Internal
 import Agda.Syntax.Position ( noRange )
 import Agda.Syntax.Scope.Base
-import Agda.Syntax.Scope.Monad ( bindVariable, freshConcreteName, isDatatypeModule )
+import Agda.Syntax.Scope.Monad ( bindVariable, freshConcreteName, isDatatypeModule, resolveName )
 import Agda.Syntax.Common.Pretty ( prettyShow )
 import qualified Agda.Syntax.Common.Pretty as P
 
