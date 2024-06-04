@@ -53,8 +53,7 @@ extensionOpt ext opts = return opts { optExtensions = Hs.parseExtension ext : op
 rtcOpt :: Flag Options
 rtcOpt opts = return opts { optRtc = True }
 
-
-backend :: Backend' Options Options ModuleEnv ModuleRes ((CompiledDef, CompiledDef), CompileOutput)
+backend :: Backend' Options Options ModuleEnv ModuleRes (RtcDefs, CompileOutput)
 backend = Backend'
   { backendName           = "agda2hs"
   , backendVersion        = Just (showVersion version)

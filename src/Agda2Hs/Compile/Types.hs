@@ -34,6 +34,19 @@ type Ranged a    = (Range, a)
 
 type Code = (Hs.Module Hs.SrcSpanInfo, [Hs.Comment])
 
+data WithRtc d = WithRtc {
+  defn :: d,
+  -- Runtime check
+  rtcDefn :: d
+}
+
+instance Functor WithRtc where
+  fmap :: (a -> b) -> WithRtc a -> WithRtc b
+  fmap f (WithRtc d r)= WithRtc (f d) (f r)
+
+type RtcDefs = WithRtc CompiledDef
+type RtcDecls = WithRtc [Hs.Decl ()]
+
 -- | Custom substitution for a given definition.
 data Rewrite = Rewrite
   { rewFrom   :: String

@@ -131,12 +131,12 @@ prettyShowImportDecl (Hs.ImportDecl _ m qual src safe mbPkg mbName mbSpecs) =
           (Hs.Ident  _ _)                     -> rest
 
 writeModule :: Options -> ModuleEnv -> IsMain -> TopLevelModuleName
-            -> [((CompiledDef, CompiledDef), CompileOutput)] -> TCM ModuleRes
+            -> [(RtcDefs, CompileOutput)] -> TCM ModuleRes
 writeModule opts _ isMain m outs = do
   code <- getForeignPragmas (optExtensions opts)
   let mod = prettyShow m
-      defs = concatMap (defBlock . fst . fst) outs ++ codeBlocks code
-      chkdefs = concatMap (defBlock . snd . fst) outs
+      defs = concatMap (defBlock . defn . fst) outs ++ codeBlocks code
+      chkdefs = concatMap (defBlock . rtcDefn . fst) outs
       output = map snd outs
       imps = concatMap imports output
       exts = concatMap haskellExtensions output

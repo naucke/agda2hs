@@ -108,7 +108,7 @@ compileLitNatPat = \case
 
 compileFun, compileFun'
   :: Bool -- ^ Whether the type signature shuuld also be generated
-  -> Definition -> C ([Hs.Decl ()], [Hs.Decl ()])
+  -> Definition -> C RtcDecls
 
 compileFun withSig def@Defn{..} =
   setCurrentRangeQ defName 
@@ -126,7 +126,7 @@ compileFun' withSig def@Defn{..} = inTopContext $ withCurrentModule m $ do
 
   ifM (endsInSort defType)
     -- if the function type ends in Sort, it's a type alias!
-    ((, []) <$> (ensureNoLocals err >> compileTypeDef x def))
+    ((`WithRtc` []) <$> (ensureNoLocals err >> compileTypeDef x def))
     -- otherwise, we have to compile clauses.
     $ do
     tel <- lookupSection m
@@ -172,7 +172,7 @@ compileFun' withSig def@Defn{..} = inTopContext $ withCurrentModule m $ do
           Uncheckable -> return []
           Checkable ds -> return $ sig ++ ds)
         $ return []
-      return (def, chk)
+      return $ WithRtc def chk
   where
     Function{..} = theDef
     m = qnameModule defName
@@ -252,7 +252,7 @@ compileClause' curModule projName x ty c@Clause{..} = do
 
     let rhs = Hs.UnGuardedRhs () hsBody
         whereBinds | null whereDecls = Nothing
-                   | otherwise       = Just $ Hs.BDecls () (concatMap fst whereDecls)
+                   | otherwise       = Just $ Hs.BDecls () (concatMap defn whereDecls)
         match = case (x, ps) of
           (Hs.Symbol{}, p : q : ps) -> Hs.InfixMatch () p x (q : ps) rhs whereBinds
           _                         -> Hs.Match () x ps rhs whereBinds
@@ -390,12 +390,13 @@ checkTransparentPragma def = do
   whenM (emitsRtc (defName def) <&> (&& not (checkNoneErased tele))) $ genericDocError =<<
         "Cannot make function" <+> prettyTCM (defName def) <+> "transparent." <+>
         "Transparent functions cannot have erased arguments with runtime checking."
-  compileFun False def >>= (\case
+  compiledFun <- defn <$> compileFun False def
+  case compiledFun of
     [Hs.FunBind _ cls] ->
       mapM_ checkTransparentClause cls
     [Hs.TypeDecl _ hd b] ->
       checkTransparentTypeDef hd b
-    _ -> __IMPOSSIBLE__) . fst
+    _ -> __IMPOSSIBLE__
   where
     tele = theTel $ telView' $ defType def
 

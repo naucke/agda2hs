@@ -319,7 +319,7 @@ checkFixityLevel name (Related lvl) =
                          <+> text "for operator"   <+> prettyTCM name
     else pure (Just (round lvl))
 
-maybePrependFixity :: QName -> Fixity -> C ([Hs.Decl ()], [Hs.Decl ()]) -> C ([Hs.Decl ()], [Hs.Decl ()])
+maybePrependFixity :: QName -> Fixity -> C RtcDecls -> C RtcDecls
 maybePrependFixity n f comp | f /= noFixity = do
   hsLvl <- checkFixityLevel n (fixityLevel f)
   let x = hsName $ prettyShow $ qnameName n
@@ -328,7 +328,7 @@ maybePrependFixity n f comp | f /= noFixity = do
         LeftAssoc  -> Hs.AssocLeft ()
         RightAssoc -> Hs.AssocRight ()
   let head = (Hs.InfixDecl () hsAssoc hsLvl [Hs.VarOp () x]:)
-  (head -*- head) <$> comp
+  (head <$>) <$> comp
 maybePrependFixity n f comp = comp
 
 

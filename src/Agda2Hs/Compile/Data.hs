@@ -17,7 +17,7 @@ import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 
 import Agda.Utils.Impossible ( __IMPOSSIBLE__ )
-import Agda.Utils.Monad ( ifM )
+import Agda.Utils.Monad ( ifNotM )
 import Agda.Utils.Tuple ( mapSnd )
 
 import Agda2Hs.Compile.RuntimeCheckUtils
@@ -25,6 +25,20 @@ import Agda2Hs.Compile.Type
 import Agda2Hs.Compile.Types
 import Agda2Hs.Compile.Utils
 import Agda2Hs.HsUtils
+data DataRtcResult
+  = NoRtc
+  | DataNoneErased String
+  | DataUncheckable
+  | DataCheckable [Hs.Decl ()]
+
+concatRtc :: [DataRtcResult] -> ([String], [Hs.Decl ()])
+concatRtc [] = ([], [])
+concatRtc (res : ress) = case res of
+  DataNoneErased s -> (s : tlNoneErased, tlCheckable)
+  DataCheckable ds -> (tlNoneErased, ds ++ tlCheckable)
+  _ -> tl
+  where
+    tl@(tlNoneErased, tlCheckable) = concatRtc ress
 
 checkNewtype :: Hs.Name () -> [Hs.QualConDecl ()] -> C ()
 checkNewtype name cs = do
@@ -32,7 +46,7 @@ checkNewtype name cs = do
   case head cs of
     Hs.QualConDecl () _ _ (Hs.ConDecl () cName types) -> checkNewtypeCon cName types
 
-compileData :: AsNewType -> [Hs.Deriving ()] -> Definition -> C ([Hs.Decl ()], [Hs.Decl ()])
+compileData :: AsNewType -> [Hs.Deriving ()] -> Definition -> C RtcDecls
 compileData newtyp ds def = do
   let prettyName = prettyShow $ qnameName $ defName def
       d = hsName prettyName
@@ -45,13 +59,14 @@ compileData newtyp ds def = do
   addContext tel $ do
     binds <- compileTeleBinds tel
     chkdCs <- mapM (compileConstructor params) cs
-
-    chks <- ifM (emitsRtc $ defName def) (do
-      let (noneErased, chks) = mapSnd concat $ partitionEithers $ mapMaybe snd chkdCs
-      -- Always export data type name
-      tellNoErased $ prettyName ++ "(" ++ intercalate ", " noneErased ++ ")"
-      return chks)
-      $ return []
+    chks <- ifNotM
+      (emitsRtc $ defName def)
+      (return [])
+      $ do
+        let (noneErased, chks) = concatRtc $ map snd chkdCs
+        -- Always export data type name
+        tellNoErased $ prettyName ++ "(" ++ intercalate ", " noneErased ++ ")"
+        return chks
 
     let cs = map fst chkdCs
         hd = foldl (Hs.DHApp ()) (Hs.DHead () d) binds
@@ -60,7 +75,7 @@ compileData newtyp ds def = do
 
     when newtyp (checkNewtype d cs)
 
-    return ([Hs.DataDecl () target Nothing hd cs ds], chks)
+    return $ WithRtc [Hs.DataDecl () target Nothing hd cs ds] chks
   where
     allIndicesErased :: Type -> C ()
     allIndicesErased t = reduce (unEl t) >>= \case
@@ -71,8 +86,7 @@ compileData newtyp ds def = do
         DomForall{}     -> genericDocError =<< text "Not supported: indexed datatypes"
       _ -> return ()
 
-compileConstructor :: [Arg Term] -> QName -> C (Hs.QualConDecl (),
-{- optional exportable cons/checker function -} Maybe (Either String [Hs.Decl ()]))
+compileConstructor :: [Arg Term] -> QName -> C (Hs.QualConDecl (), DataRtcResult)
 compileConstructor params c = do
   reportSDoc "agda2hs.data.con" 15 $ text "compileConstructor" <+> prettyTCM c
   reportSDoc "agda2hs.data.con" 20 $ text "  params = " <+> prettyTCM params
@@ -85,14 +99,17 @@ compileConstructor params c = do
 
   checkValidConName conName
   args <- compileConstructorArgs tel
-  chk <- ifM (emitsRtc c) (do
-    sig <- Hs.TypeSig () [hsName $ prettyShow $ qnameName smartQName] <$> compileType (unEl ty)
-    -- export constructor name when no erased, provide signature for smart constructor if it exists
-    checkRtc tel smartQName (hsVar conString) >>= \case
-      NoneErased -> return $ Just $ Left conString
-      Uncheckable -> return Nothing
-      Checkable ds -> return $ Just $ Right $ sig : ds)
-    $ return Nothing
+  chk <-
+    ifNotM
+      (emitsRtc c)
+      (return NoRtc)
+      $ do
+        sig <- Hs.TypeSig () [hsName $ prettyShow $ qnameName smartQName] <$> compileType (unEl ty)
+        -- export constructor name when no erased, provide signature for smart constructor if it exists
+        checkRtc tel smartQName (hsVar conString) >>= \case
+          NoneErased -> return $ DataNoneErased conString
+          Uncheckable -> return DataUncheckable
+          Checkable ds -> return $ DataCheckable $ sig : ds
 
   return (Hs.QualConDecl () Nothing Nothing $ Hs.ConDecl () conName args, chk)
 

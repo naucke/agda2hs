@@ -20,6 +20,7 @@ allTests : build/$(MAIN).hs build/$(MAIN_RTC).hs
 
 print-fail :
 	@echo == Failing tests ==
+	mkdir build
 
 fail : print-fail $(patsubst Fail/%.agda,build/%.err,$(wildcard Fail/*.agda))
 

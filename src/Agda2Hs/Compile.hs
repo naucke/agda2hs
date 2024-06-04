@@ -62,7 +62,7 @@ moduleSetup _ _ m _ = do
 
 compile
   :: Options -> ModuleEnv -> IsMain -> Definition 
-  -> TCM ((CompiledDef, CompiledDef), CompileOutput)
+  -> TCM (RtcDefs, CompileOutput)
 compile opts tlm _ def = do
   when rtc importDec
   withCurrentModule (qnameModule qname)
@@ -76,8 +76,8 @@ compile opts tlm _ def = do
     tag []   = []
     tag code = [(nameBindingSite $ qnameName qname, code)]
 
-    compileAndTag :: C (CompiledDef, CompiledDef)
-    compileAndTag = (tag -*- tag) <$> do
+    compileAndTag :: C RtcDefs
+    compileAndTag = (tag <$>) <$> do
       p <- processPragma qname
 
       reportSDoc "agda2hs.compile" 5  $ text "Compiling definition:" <+> prettyTCM qname
@@ -89,8 +89,8 @@ compile opts tlm _ def = do
       reportSDoc "agda2hs.compile" 15  $ text "Is instance?" <+> prettyTCM isInstance
 
       case (p , theDef def) of
-        (NoPragma, _) -> return ([], [])
-        (ExistingClassPragma, _) -> return ([], [])
+        (NoPragma, _) -> return $ WithRtc [] []
+        (ExistingClassPragma, _) -> return $ WithRtc [] []
         (DefaultPragma _, Function {}) | not isInstance -> compileFun True def
         (NewTypePragma ds, Datatype {}) -> compileData True ds def
         (DefaultPragma ds, Datatype {}) -> compileData False ds def
@@ -100,7 +100,7 @@ compile opts tlm _ def = do
         -- ^ Names that may induce runtime checks
         _ -> do
           tellNoErased $ prettyShow $ qnameName $ defName def
-          (,[]) <$> case (p, theDef def) of
+          (`WithRtc` []) <$> case (p, theDef def) of
             (UnboxPragma s    , Record {}  ) -> [] <$ checkUnboxPragma def
             (TransparentPragma, Function {}) -> [] <$ checkTransparentPragma def
             (InlinePragma     , Function {}) -> [] <$ checkInlinePragma def
