@@ -387,7 +387,7 @@ withClauseLocals curModule c@Clause{..} k = do
 -- | Ensure a definition can be defined as transparent.
 checkTransparentPragma :: Definition -> C ()
 checkTransparentPragma def = do
-  whenM (emitsRtc (defName def) <&> (&& not (checkNoneErased tele))) $ genericDocError =<<
+  whenM (andM [emitsRtc $ defName def, not <$> checkNoneErased tele]) $ genericDocError =<<
         "Cannot make function" <+> prettyTCM (defName def) <+> "transparent." <+>
         "Transparent functions cannot have erased arguments with runtime checking."
   compiledFun <- defn <$> compileFun False def
@@ -419,7 +419,7 @@ checkInlinePragma :: Definition -> C ()
 checkInlinePragma def@Defn{defName = f, defType = ty} = do
   let Function{funClauses = cs} = theDef def
   typeTel <- theTel <$> telView ty
-  whenM (emitsRtc f <&> (&& not (checkNoneErased typeTel))) $ genericDocError =<<
+  whenM (andM [emitsRtc $ defName def, not <$> checkNoneErased typeTel]) $ genericDocError =<<
         "Cannot make function" <+> prettyTCM (defName def) <+> "inlinable." <+>
         "Inline functions cannot have erased arguments with runtime checking."
   case filter (isJust . clauseBody) cs of

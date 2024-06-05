@@ -25,7 +25,7 @@ import Agda.TypeChecking.Telescope
 
 import Agda.Utils.Singleton
 import Agda.Utils.Impossible ( __IMPOSSIBLE__ )
-import Agda.Utils.Monad ( ifM, whenM )
+import Agda.Utils.Monad ( andM, ifM, whenM )
 
 import Agda2Hs.AgdaUtils
 import Agda2Hs.Compile.ClassInstance
@@ -105,7 +105,7 @@ compileRecord target def = do
     let fieldTel = snd $ splitTelescopeAt recPars recTel
     case target of
       ToClass ms -> do
-        whenM (emitsRtc (defName def) <&> (&& not (checkNoneErased fieldTel))) $ genericDocError =<<
+        whenM (andM [emitsRtc $ defName def, not <$> checkNoneErased fieldTel]) $ genericDocError =<<
              "Cannot compile" <+> prettyTCM (defName def) <+> "to class." <+>
              "Classes cannot have erased arguments with runtime checking."
         (classConstraints, classDecls, _) <- compileRecFields classDecl recFields fieldTel
@@ -138,7 +138,7 @@ compileRecord target def = do
     rString = prettyShow $ qnameName $ defName def
     rName = hsName rString
     conString | recNamedCon = prettyShow $ qnameName $ conName recConHead
-              | otherwise   = rString
+              | otherwise   = rString   -- Reuse record name for constructor if no given name
     cName = hsName conString
 
     -- In Haskell, projections live in the same scope as the record type, so check here that the
@@ -207,7 +207,7 @@ checkUnboxPragma def = do
   addContext tel $ do
     pars <- getContextArgs
     let fieldTel = recTel `apply` pars
-    whenM (emitsRtc (defName def) <&> (&& not (checkNoneErased fieldTel))) $ genericDocError =<<
+    whenM (andM [emitsRtc $ defName def, not <$> checkNoneErased fieldTel]) $ genericDocError =<<
           "Cannot make record" <+> prettyTCM (defName def) <+> "unboxed." <+>
           "Unboxed records cannot have erased arguments in their fields with runtime checking."
     fields <- nonErasedFields fieldTel

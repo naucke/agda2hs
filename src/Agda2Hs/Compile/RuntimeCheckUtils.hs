@@ -14,19 +14,21 @@ import Agda.Syntax.Translation.ConcreteToAbstract (ToAbstract (toAbstract))
 import Agda.TypeChecking.InstanceArguments (findInstance)
 import Agda.TypeChecking.MetaVars (newInstanceMeta, newLevelMeta)
 import Agda.TypeChecking.Monad
-import Agda.TypeChecking.Pretty (PrettyTCM (prettyTCM), (<+>))
+import Agda.TypeChecking.Pretty (PrettyTCM (prettyTCM), (<+>), text)
 import Agda.TypeChecking.Reduce (instantiate)
 import Agda.TypeChecking.Substitute (telView', theTel)
 import Agda.TypeChecking.Telescope (splitTelescopeAt)
 import Agda.Utils.Impossible (__IMPOSSIBLE__)
 import Agda.Utils.List (initLast)
 import qualified Agda.Utils.List1 as List1
-import Agda.Utils.Monad (unless)
+import Agda.Utils.Monad (unless, partitionM, allM)
 import Agda.Utils.Tuple (mapSnd)
 import Agda2Hs.Compile.Term (compileTerm)
+import Agda2Hs.Compile.Type (compileDom, DomOutput(DODropped))
 import Agda2Hs.Compile.Types (C, rtc)
 import Agda2Hs.Compile.Utils
 import Agda2Hs.HsUtils
+import Control.Monad (when)
 import Control.Monad.Except (catchError)
 import Control.Monad.Reader (asks)
 import Control.Monad.State (StateT (StateT), modify, put, runStateT)
@@ -67,11 +69,11 @@ smartConstructor qname strip1 = do
     smartQName = qnameFromList $ List1.prependList qualifier $ smartName List1.:| []
 
 -- Runtime checks are not supported for certain pragmas. Check that none are erased.
-checkNoneErased :: Telescope -> Bool
-checkNoneErased tel = null topLevelErased && all (checkNoneErased . snd) other
-  where
-    doms = telToList tel
-    (topLevelErased, other) = partition (checkTopLevelErased . fst) $ zip doms $ map telify doms
+checkNoneErased :: Telescope -> C Bool
+checkNoneErased tel = do
+  let doms = telToList tel
+  (other, topLevelErased) <- partitionM (checkTopLevelErased . fst) $ zip doms $ map telify doms
+  (null topLevelErased &&) <$> allM other (checkNoneErased . snd)
 
 -- External runtime check result
 data RtcResult
@@ -130,6 +132,10 @@ createRtc n args chks success =
 createRtc' :: Hs.Name () -> [Hs.Pat ()] -> Hs.Rhs () -> Maybe (Hs.Binds ()) -> Hs.Decl ()
 createRtc' n args rhs binds = Hs.FunBind () [Hs.Match () n args rhs binds]
 
+-- Suffixes for `go` functions in the `where` declaration for nested
+-- erased arguments and `a` arguments for unnamed arguments.
+-- Example to show all cases:
+-- horrible : (((x : Nat) ⦃@0 _ : IsTrue (x > 0)⦄ → ((y : Nat) ⦃@0 _ : IsFalse (x < y)⦄ → Nat) → Nat) → Nat) → Nat
 type NameIndices = (Int, Int)
 
 -- Creates a runtime check if necessary and possible, informing C accordingly.
@@ -153,6 +159,8 @@ checkRtc tel name success =
 -- Takes telescope of type to check.
 checkRtc' :: NameIndices -> Telescope -> C (NameIndices, RtcResult')
 checkRtc' idcs tel = do
+  -- Partition out arguments that are erased and at top level (those we will attempt to check)
+  (call, topLevelErased) <- partitionM (checkTopLevelErased . fst) $ zip doms telsUpTo
   ourChks <- mapM (uncurry createGuardExp) topLevelErased
   (belowIdcs, belowChks) <- mapAccumLM checkRtc'' idcs call
   (belowIdcs,)
@@ -168,8 +176,6 @@ checkRtc' idcs tel = do
   where
     doms = telToList tel
     telsUpTo = map (\i -> fst $ splitTelescopeAt i tel) [0 ..]
-    -- Partition out arguments that are erased and at top level (those we will attempt to check)
-    (topLevelErased, call) = partition (checkTopLevelErased . fst) $ zip doms telsUpTo
 
 -- Check a single type for runtime checkability.
 -- Accumulates on name indices for `go` function and `a` argument.
@@ -209,10 +215,8 @@ telify :: Dom (a, Type) -> Telescope
 telify = theTel . telView' . snd . unDom
 
 -- Check a type is erased and at top level; in this case, it should be checked.
-checkTopLevelErased :: Dom (a, Type) -> Bool
-checkTopLevelErased dom = case getQuantity dom of
-  Quantity0 _ -> null $ telToList $ telify dom
-  _ -> False
+checkTopLevelErased :: Dom (a, Type) -> C Bool
+checkTopLevelErased dom = (DODropped ==) <$> compileDom (snd <$> dom)
 
 -- Create binds from declarations except when empty
 binds :: [Hs.Decl ()] -> Maybe (Hs.Binds ())
@@ -229,21 +233,19 @@ decify t = do
   return $ t {unEl = Def dec $ map Apply [hArg $ Level level, vArg $ unEl t]}
 
 -- Failably find instances for decidable terms
-findDecInstances :: Type -> C (Maybe Term)
-findDecInstances t =
-  liftTCM $
-    do
-      (m, v) <- newInstanceMeta "" t
-      findInstance m Nothing
-      Just <$> instantiate v
-      `catchError` const (return Nothing)
+findDecInstances :: Type -> TCMT IO (Maybe Term)
+findDecInstances t = do
+  (m, v) <- newInstanceMeta "" t
+  findInstance m Nothing
+  Just <$> instantiate v
+  `catchError` const (return Nothing)
 
 -- Create expression to be put in the guard
 createGuardExp :: Dom (a, Type) -> Telescope -> C (Maybe (Hs.Exp ()))
 createGuardExp dom telUpTo =
   addContext (setHiding Hidden <$> telUpTo) $ do
     dec <- decify $ snd $ unDom dom
-    findDecInstances dec >>= traverse (compileTerm dec)
+    liftTCM (findDecInstances dec) >>= traverse (compileTerm dec)
 
 -- from GHC.Utils.Monad
 mapAccumLM :: (Monad m, Traversable t) => (acc -> x -> m (acc, y)) -> acc -> t x -> m (acc, t y)

@@ -41,8 +41,7 @@ data WithRtc d = WithRtc {
 }
 
 instance Functor WithRtc where
-  fmap :: (a -> b) -> WithRtc a -> WithRtc b
-  fmap f (WithRtc d r)= WithRtc (f d) (f r)
+  fmap f (WithRtc d r) = WithRtc (f d) (f r)
 
 type RtcDefs = WithRtc CompiledDef
 type RtcDecls = WithRtc [Hs.Decl ()]
