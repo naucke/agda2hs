@@ -15,7 +15,7 @@ import Agda.TypeChecking.MetaVars (newInstanceMeta, newLevelMeta)
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Pretty (PrettyTCM (prettyTCM), (<+>), text)
 import Agda.TypeChecking.Reduce (instantiate)
-import Agda.TypeChecking.Substitute (telView', theTel)
+import Agda.TypeChecking.Substitute (telView', theTel, apply)
 import Agda.TypeChecking.Telescope (splitTelescopeAt)
 import Agda.Utils.Impossible (__IMPOSSIBLE__)
 import Agda.Utils.List (initLast)
@@ -188,16 +188,11 @@ checkRtc' idcs tel = do
   -- Partition out arguments that are erased and at top level (those we will attempt to check)
   (topLevelErased, call) <- partitionM (checkTopLevelErased . fst) $ zip doms telsUpTo
 
-  argDefs <- mapM getConstInfo [q | Def q _ <- map (unEl . snd . unDom . fst) call]
-  let recDefs = [_recFields q | RecordDefn q <- map theDef argDefs]
-
-  fieldDefs <- mapM (mapM (traverse getConstInfo)) recDefs
-  let namedDefs = zipWith zip (map unDom `map` recDefs) fieldDefs
-      recTypes = map (map (\d -> (prettyShow $ qnameName $ fst d,) . defType <$> snd d)) namedDefs
-      recTels = map (map telFromList . tail . inits) recTypes
-      recTelTypes = concat recTypes `zip` concat recTels
-
-  erasedRecFields <- filterM (checkTopLevelErased . fst) recTelTypes
+  let defs = [(q, e) | Def q e <- map (unEl . snd . unDom . fst) call]
+  theDefs <- mapM (\(q, e) -> getConstInfo q >>= (\d -> return (theDef d, e))) defs
+  let recTels = [_recTel d `apply` [a | Apply a <- e] | (RecordDefn d, e) <- theDefs]
+      recDomsCtxs = concatMap telToList recTels `zip` concatMap telSplit recTels
+  erasedRecFields <- filterM (checkTopLevelErased . fst) recDomsCtxs
   reportSDoc "" 1 $ text $ show erasedRecFields
   recChks <- mapM (uncurry createGuardExp) erasedRecFields
   reportSDoc "" 1 $ text $ show recChks
@@ -219,7 +214,8 @@ checkRtc' idcs tel = do
               else return Checkable' {..}
   where
     doms = telToList tel
-    telsUpTo = map (\i -> fst $ splitTelescopeAt i tel) [0 ..]
+    telSplit tele = map (\i -> fst $ splitTelescopeAt i tele) [0 ..]
+    telsUpTo = telSplit tel
 
 -- Check a single type for runtime checkability.
 -- Accumulates on name indices for `go` function and `a` argument.
@@ -296,7 +292,7 @@ findDecInstances t =
 createGuardExp :: Dom (a, Type) -> Telescope -> C (Maybe (Hs.Exp ()))
 createGuardExp dom telUpTo = addContext telUpTo $ do
   dec <- decify $ snd $ unDom dom
-  liftTCM (findDecInstances dec) >>= traverse (compileTerm dec)
+  liftTCM (findDecInstances dec) >>= mapM (compileTerm dec)
 
 -- from GHC.Utils.Monad
 mapAccumLM :: (Monad m, Traversable t) => (acc -> x -> m (acc, y)) -> acc -> t x -> m (acc, t y)
