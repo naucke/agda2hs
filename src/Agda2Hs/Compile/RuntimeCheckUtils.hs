@@ -13,22 +13,23 @@ import Agda.Syntax.Translation.ConcreteToAbstract (ToAbstract (toAbstract))
 import Agda.TypeChecking.InstanceArguments (findInstance)
 import Agda.TypeChecking.MetaVars (newInstanceMeta, newLevelMeta)
 import Agda.TypeChecking.Monad
-import Agda.TypeChecking.Pretty (PrettyTCM (prettyTCM), (<+>))
+import Agda.TypeChecking.Pretty (PrettyTCM (prettyTCM), (<+>), text)
 import Agda.TypeChecking.Reduce (instantiate)
 import Agda.TypeChecking.Substitute (telView', theTel)
 import Agda.TypeChecking.Telescope (splitTelescopeAt)
 import Agda.Utils.Impossible (__IMPOSSIBLE__)
 import Agda.Utils.List (initLast)
 import qualified Agda.Utils.List1 as List1
-import Agda.Utils.Monad (allM, partitionM, unless)
+import Agda.Utils.Monad (allM, partitionM)
 import Agda2Hs.Compile.Term (compileTerm)
 import Agda2Hs.Compile.Type (DomOutput (DODropped), compileDom)
 import Agda2Hs.Compile.Types (C)
 import Agda2Hs.Compile.Utils
 import Agda2Hs.HsUtils
+import Control.Monad (filterM, unless)
 import Control.Monad.Except (catchError)
 import Control.Monad.State (StateT (StateT, runStateT))
-import Data.List (intersect)
+import Data.List (intersect, inits)
 import Data.Map (empty)
 import Data.Maybe (catMaybes, fromJust, isJust)
 import Data.Tuple (swap)
@@ -186,7 +187,23 @@ checkRtc' :: NameIndices -> Telescope -> C (NameIndices, RtcResult')
 checkRtc' idcs tel = do
   -- Partition out arguments that are erased and at top level (those we will attempt to check)
   (topLevelErased, call) <- partitionM (checkTopLevelErased . fst) $ zip doms telsUpTo
-  ourChks <- mapM (uncurry createGuardExp) topLevelErased
+
+  argDefs <- mapM getConstInfo [q | Def q _ <- map (unEl . snd . unDom . fst) call]
+  let recDefs = [_recFields q | RecordDefn q <- map theDef argDefs]
+
+  fieldDefs <- mapM (mapM (traverse getConstInfo)) recDefs
+  let namedDefs = zipWith zip (map unDom `map` recDefs) fieldDefs
+      recTypes = map (map (\d -> (prettyShow $ qnameName $ fst d,) . defType <$> snd d)) namedDefs
+      recTels = map (map telFromList . tail . inits) recTypes
+      recTelTypes = concat recTypes `zip` concat recTels
+
+  erasedRecFields <- filterM (checkTopLevelErased . fst) recTelTypes
+  reportSDoc "" 1 $ text $ show erasedRecFields
+  recChks <- mapM (uncurry createGuardExp) erasedRecFields
+  reportSDoc "" 1 $ text $ show recChks
+
+  ourChks' <- mapM (uncurry createGuardExp) topLevelErased
+  let ourChks = ourChks' ++ recChks
   -- Recursively accumulate checks on arguments below top level
   (belowIdcs, belowChks) <- mapAccumLM checkRtc'' idcs call
   (belowIdcs,)
