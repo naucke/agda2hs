@@ -16,7 +16,7 @@ import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Pretty (PrettyTCM (prettyTCM), (<+>), text)
 import Agda.TypeChecking.Reduce (instantiate)
 import Agda.TypeChecking.Substitute (telView', theTel, apply)
-import Agda.TypeChecking.Telescope (splitTelescopeAt)
+import Agda.TypeChecking.Telescope (flattenTel, splitTelescopeAt)
 import Agda.Utils.Impossible (__IMPOSSIBLE__)
 import Agda.Utils.List (initLast)
 import qualified Agda.Utils.List1 as List1
@@ -29,6 +29,7 @@ import Agda2Hs.HsUtils
 import Control.Monad (filterM, unless)
 import Control.Monad.Except (catchError)
 import Control.Monad.State (StateT (StateT, runStateT))
+import Data.Bifunctor (first)
 import Data.List (intersect, inits)
 import Data.Map (empty)
 import Data.Maybe (catMaybes, fromJust, isJust)
@@ -192,9 +193,12 @@ checkRtc' idcs tel = do
   theDefs <- mapM (\(q, e) -> getConstInfo q >>= (\d -> return (theDef d, e))) defs
   let recTels = [_recTel d `apply` [a | Apply a <- e] | (RecordDefn d, e) <- theDefs]
       recDomsCtxs = concatMap telToList recTels `zip` concatMap telSplit recTels
-  erasedRecFields <- filterM (checkTopLevelErased . fst) recDomsCtxs
-  reportSDoc "" 1 $ text $ show erasedRecFields
-  recChks <- mapM (uncurry createGuardExp) erasedRecFields
+      recDomsCtxs' = concatMap flattenTel recTels `zip` concatMap telSplit recTels
+      recDomsCtxs'' = map (first (("",) <$>)) recDomsCtxs'
+  erasedRecFields <- filterM (checkTopLevelErased . fst) recDomsCtxs''
+  -- reportSDoc "" 1 $ text $ show erasedRecFields
+  -- XXX these tels should prob come in order but try this for now
+  recChks <- mapM (\(d, t) -> createGuardExp d (telFromList $ telToList tel ++ telToList t)) erasedRecFields
   reportSDoc "" 1 $ text $ show recChks
 
   ourChks' <- mapM (uncurry createGuardExp) topLevelErased
@@ -292,6 +296,7 @@ findDecInstances t =
 createGuardExp :: Dom (a, Type) -> Telescope -> C (Maybe (Hs.Exp ()))
 createGuardExp dom telUpTo = addContext telUpTo $ do
   dec <- decify $ snd $ unDom dom
+  reportSDoc "" 1 $ prettyTCM dec
   liftTCM (findDecInstances dec) >>= mapM (compileTerm dec)
 
 -- from GHC.Utils.Monad
