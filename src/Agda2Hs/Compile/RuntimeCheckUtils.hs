@@ -13,7 +13,7 @@ import Agda.Syntax.Translation.ConcreteToAbstract (ToAbstract (toAbstract))
 import Agda.TypeChecking.InstanceArguments (findInstance)
 import Agda.TypeChecking.MetaVars (newInstanceMeta, newLevelMeta)
 import Agda.TypeChecking.Monad
-import Agda.TypeChecking.Pretty (PrettyTCM (prettyTCM), text, (<+>))
+import Agda.TypeChecking.Pretty (PrettyTCM (prettyTCM), (<+>))
 import Agda.TypeChecking.Records (projectTyped)
 import Agda.TypeChecking.Reduce (instantiate)
 import Agda.TypeChecking.Substitute (telView', theTel)
@@ -27,7 +27,7 @@ import Agda2Hs.Compile.Type (DomOutput (DODropped), compileDom)
 import Agda2Hs.Compile.Types (C)
 import Agda2Hs.Compile.Utils
 import Agda2Hs.HsUtils
-import Control.Monad (ap, filterM, unless)
+import Control.Monad (filterM, unless)
 import Control.Monad.Except (catchError)
 import Control.Monad.State (StateT (StateT, runStateT))
 import Data.List (intersect)
@@ -187,12 +187,11 @@ checkRtc tel name success = do
 checkRtc' :: NameIndices -> Telescope -> C (NameIndices, RtcResult')
 checkRtc' idcs tel = do
   -- Partition out arguments that are erased and at top level (those we will attempt to check)
-  (topLevelErased, call) <- partitionM (checkTopLevelErased' . (\(d, _, _) -> d)) $ zip3 doms telsUpTo telsUpToIncluding
+  (topLevelErased, call) <- partitionM (checkTopLevelErased' . fst) $ zip doms telsUpToOrIncluding
 
   -- slightly awkward extract of record types in arguments, their types,
-  -- telescope up to and including (!) them, and their erased field QNames
-  -- TODO consider zip instead
-  let defTeTyTel = map (\(ty, _, tel) -> let te = snd $ unDom ty in (unEl te, te, tel)) call
+  -- telescope up to and including them, and their erased field QNames
+  let defTeTyTel = map (\(ty, (_, tel)) -> let te = snd $ unDom ty in (unEl te, te, tel)) call
       defTTTQNames = [(ttt, q) | ttt@(Def q _, _, _) <- defTeTyTel]
   defTermsDefs <- (\(ttt, q) -> (ttt,) . theDef <$> getConstInfo q) `mapM` defTTTQNames
   let recTTTFields = [(ttt, _recFields d) | (ttt, RecordDefn d) <- defTermsDefs]
@@ -200,21 +199,19 @@ checkRtc' idcs tel = do
     (\(ttt, qs) -> (ttt,) <$> mapM (\q -> (unDom q,) . (defType <$>) <$> mapM getConstInfo q) qs)
       `mapM` recTTTFields
   recTTTErasedFields <-
-    (\(ttt, qs) -> (ttt,) . map fst <$> filterM (checkTopLevelErased . snd) qs) `mapM` recTTTFieldsTypes
+    (\(ttt, qs) -> (ttt,) . map fst <$> filterM (checkTopLevelErased . snd) qs)
+      `mapM` recTTTFieldsTypes
 
   applied <-
     (\((te, ty, tel), qs) -> (((,tel) <$>) . projectTyped te ty ProjPostfix) `mapM` qs)
-    `mapM` recTTTErasedFields
+      `mapM` recTTTErasedFields
   let erasedRecFields = [(t, tel) | (Just (_, _, t), tel) <- concat applied]
-  reportSDoc "" 1 $ prettyTCM erasedRecFields
-
   recChks <- uncurry createGuardExp `mapM` erasedRecFields
-  reportSDoc "" 1 $ text $ show recChks
 
-  ourChks' <- (\(d, t, _) -> createGuardExp (snd $ unDom d) t) `mapM` topLevelErased
+  ourChks' <- (\(d, (t, _)) -> createGuardExp (snd $ unDom d) t) `mapM` topLevelErased
   let ourChks = ourChks' ++ recChks
   -- Recursively accumulate checks on arguments below top level
-  (belowIdcs, belowChks) <- mapAccumLM checkRtc'' idcs $ map (\(d, t, _) -> (d, t)) call
+  (belowIdcs, belowChks) <- mapAccumLM checkRtc'' idcs $ map (\(d, (t, _)) -> (d, t)) call
   (belowIdcs,)
     <$> if not (all isJust belowChks && all isJust ourChks)
       then return Uncheckable'
@@ -228,9 +225,8 @@ checkRtc' idcs tel = do
               else return Checkable' {..}
   where
     doms = telToList tel
-    telSplit tele = map $ \i -> fst $ splitTelescopeAt i tele
-    telsUpTo = telSplit tel [0 ..]
-    telsUpToIncluding = telSplit tel [1 ..]
+    telsUpTo = map (\i -> fst $ splitTelescopeAt i tel) [0 ..]
+    telsUpToOrIncluding = zip telsUpTo $ tail telsUpTo
 
 -- Check a single type for runtime checkability.
 -- Accumulates on name indices for `go` function and `a` argument.
@@ -310,11 +306,10 @@ findDecInstances t =
 -- Create expression to be put in the guard
 createGuardExp :: Type -> Telescope -> C (Maybe (Hs.Exp ()))
 createGuardExp ty telUpTo = addContext telUpTo $ do
+  reportSDoc "" 1 $ "have tel" <+> prettyTCM telUpTo
   dec <- decify ty
-  reportSDoc "" 1 $ prettyTCM dec
-  res <- liftTCM $ findDecInstances dec
-  reportSDoc "" 1 $ "have res?" <+> prettyTCM res
-  compileTerm dec `mapM` res
+  reportSDoc "" 1 $ "have dec type" <+> prettyTCM dec
+  liftTCM (findDecInstances dec) >>= traverse (compileTerm dec)
 
 -- from GHC.Utils.Monad
 mapAccumLM :: (Monad m, Traversable t) => (acc -> x -> m (acc, y)) -> acc -> t x -> m (acc, t y)
