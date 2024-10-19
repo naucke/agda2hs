@@ -27,7 +27,7 @@ import Agda2Hs.Compile.Type (DomOutput (DODropped), compileDom)
 import Agda2Hs.Compile.Types (C)
 import Agda2Hs.Compile.Utils
 import Agda2Hs.HsUtils
-import Control.Monad (filterM, unless)
+import Control.Monad (ap, filterM, unless)
 import Control.Monad.Except (catchError)
 import Control.Monad.State (StateT (StateT, runStateT))
 import Data.List (intersect)
@@ -190,13 +190,9 @@ checkRtc' idcs tel = do
   (topLevelErased, call) <- partitionM (checkTopLevelErased' . fst) $ zip doms telsUpTo
 
   -- slightly awkward extract of record types in arguments, their types, and their erased field qnames
-  let defTermsQNames = [(te, q) | te@(Def q _) <- map (unEl . snd . unDom . fst) call]
-  defTermsDefs <-
-    ( \(te, q) -> do
-        d <- getConstInfo q
-        return ((te, defType d), theDef d)
-      )
-      `mapM` defTermsQNames
+  -- TODO consider zip instead
+  let defTTQNames = [((te, ty), q) | (ty, te@(Def q _)) <- map (ap (,) unEl . snd . unDom . fst) call]
+  defTermsDefs <- (\(tt, q) -> (tt,) . theDef <$> getConstInfo q) `mapM` defTTQNames
   let recTTFields = [(tt, _recFields d) | (tt, RecordDefn d) <- defTermsDefs]
   recTTFieldsTypes <-
     (\(tt, qs) -> (tt,) <$> mapM (\q -> (unDom q,) . (defType <$>) <$> mapM getConstInfo q) qs)
@@ -205,15 +201,15 @@ checkRtc' idcs tel = do
     (\(tt, qs) -> (tt,) . map fst <$> filterM (checkTopLevelErased . snd) qs) `mapM` recTTFieldsTypes
 
   -- XXX super unsure about the ProjOrigin
-  reportSDoc "" 1 $ prettyTCM recTTErasedFields
-  res <- mapM (\((te, ty), qs) -> projectTyped te ty ProjPostfix `mapM` qs) recTTErasedFields
-  reportSDoc "" 1 $ text $ show res
+  applied <- (\((te, ty), qs) -> projectTyped te ty ProjPostfix `mapM` qs) `mapM` recTTErasedFields
+  let erasedRecFields = [t | Just (_, _, t) <- concat applied]
+  reportSDoc "" 1 $ prettyTCM erasedRecFields
 
   -- XXX these tels should prob come in order but try this for now
   -- recChks <- addContext tel $ mapM (uncurry createGuardExp) erasedRecFields
   -- reportSDoc "" 1 $ text $ show recChks
 
-  ourChks' <- mapM (uncurry createGuardExp) topLevelErased
+  ourChks' <- uncurry (createGuardExp . snd . unDom) `mapM` topLevelErased
   let ourChks = ourChks' -- ++ recChks
   -- Recursively accumulate checks on arguments below top level
   (belowIdcs, belowChks) <- mapAccumLM checkRtc'' idcs call
@@ -309,9 +305,9 @@ findDecInstances t =
     `catchError` return (return Nothing)
 
 -- Create expression to be put in the guard
-createGuardExp :: Dom (a, Type) -> Telescope -> C (Maybe (Hs.Exp ()))
-createGuardExp dom telUpTo = addContext telUpTo $ do
-  dec <- decify $ snd $ unDom dom
+createGuardExp :: Type -> Telescope -> C (Maybe (Hs.Exp ()))
+createGuardExp ty telUpTo = addContext telUpTo $ do
+  dec <- decify ty
   liftTCM (findDecInstances dec) >>= mapM (compileTerm dec)
 
 -- from GHC.Utils.Monad
