@@ -13,10 +13,11 @@ import Agda.Syntax.Translation.ConcreteToAbstract (ToAbstract (toAbstract))
 import Agda.TypeChecking.InstanceArguments (findInstance)
 import Agda.TypeChecking.MetaVars (newInstanceMeta, newLevelMeta)
 import Agda.TypeChecking.Monad
-import Agda.TypeChecking.Pretty (PrettyTCM (prettyTCM), (<+>), text)
+import Agda.TypeChecking.Pretty (PrettyTCM (prettyTCM), text, (<+>))
+import Agda.TypeChecking.Records (projectTyped)
 import Agda.TypeChecking.Reduce (instantiate)
-import Agda.TypeChecking.Substitute (telView', theTel, apply)
-import Agda.TypeChecking.Telescope (flattenTel, splitTelescopeAt)
+import Agda.TypeChecking.Substitute (telView', theTel)
+import Agda.TypeChecking.Telescope (splitTelescopeAt)
 import Agda.Utils.Impossible (__IMPOSSIBLE__)
 import Agda.Utils.List (initLast)
 import qualified Agda.Utils.List1 as List1
@@ -29,8 +30,7 @@ import Agda2Hs.HsUtils
 import Control.Monad (filterM, unless)
 import Control.Monad.Except (catchError)
 import Control.Monad.State (StateT (StateT, runStateT))
-import Data.Bifunctor (first)
-import Data.List (intersect, inits)
+import Data.List (intersect)
 import Data.Map (empty)
 import Data.Maybe (catMaybes, fromJust, isJust)
 import Data.Tuple (swap)
@@ -72,7 +72,7 @@ smartConstructor qname strip1 = do
 checkNoneErased :: Telescope -> C Bool
 checkNoneErased tel = do
   let doms = telToList tel
-  (topLevelErased, other) <- partitionM (checkTopLevelErased . fst) $ zip doms $ map domToTel doms
+  (topLevelErased, other) <- partitionM (checkTopLevelErased' . fst) $ zip doms $ map domToTel doms
   (null topLevelErased &&) <$> allM other (checkNoneErased . snd)
 
 -- External runtime check result
@@ -187,22 +187,34 @@ checkRtc tel name success = do
 checkRtc' :: NameIndices -> Telescope -> C (NameIndices, RtcResult')
 checkRtc' idcs tel = do
   -- Partition out arguments that are erased and at top level (those we will attempt to check)
-  (topLevelErased, call) <- partitionM (checkTopLevelErased . fst) $ zip doms telsUpTo
+  (topLevelErased, call) <- partitionM (checkTopLevelErased' . fst) $ zip doms telsUpTo
 
-  let defs = [(q, e) | Def q e <- map (unEl . snd . unDom . fst) call]
-  theDefs <- mapM (\(q, e) -> getConstInfo q >>= (\d -> return (theDef d, e))) defs
-  let recTels = [_recTel d `apply` [a | Apply a <- e] | (RecordDefn d, e) <- theDefs]
-      recDomsCtxs = concatMap telToList recTels `zip` concatMap telSplit recTels
-      recDomsCtxs' = concatMap flattenTel recTels `zip` concatMap telSplit recTels
-      recDomsCtxs'' = map (first (("",) <$>)) recDomsCtxs'
-  erasedRecFields <- filterM (checkTopLevelErased . fst) recDomsCtxs''
-  -- reportSDoc "" 1 $ text $ show erasedRecFields
+  -- slightly awkward extract of record types in arguments, their types, and their erased field qnames
+  let defTermsQNames = [(te, q) | te@(Def q _) <- map (unEl . snd . unDom . fst) call]
+  defTermsDefs <-
+    ( \(te, q) -> do
+        d <- getConstInfo q
+        return ((te, defType d), theDef d)
+      )
+      `mapM` defTermsQNames
+  let recTTFields = [(tt, _recFields d) | (tt, RecordDefn d) <- defTermsDefs]
+  recTTFieldsTypes <-
+    (\(tt, qs) -> (tt,) <$> mapM (\q -> (unDom q,) . (defType <$>) <$> mapM getConstInfo q) qs)
+      `mapM` recTTFields
+  recTTErasedFields <-
+    (\(tt, qs) -> (tt,) . map fst <$> filterM (checkTopLevelErased . snd) qs) `mapM` recTTFieldsTypes
+
+  -- XXX super unsure about the ProjOrigin
+  reportSDoc "" 1 $ prettyTCM recTTErasedFields
+  res <- mapM (\((te, ty), qs) -> projectTyped te ty ProjPostfix `mapM` qs) recTTErasedFields
+  reportSDoc "" 1 $ text $ show res
+
   -- XXX these tels should prob come in order but try this for now
-  recChks <- mapM (\(d, t) -> createGuardExp d (telFromList $ telToList tel ++ telToList t)) erasedRecFields
-  reportSDoc "" 1 $ text $ show recChks
+  -- recChks <- addContext tel $ mapM (uncurry createGuardExp) erasedRecFields
+  -- reportSDoc "" 1 $ text $ show recChks
 
   ourChks' <- mapM (uncurry createGuardExp) topLevelErased
-  let ourChks = ourChks' ++ recChks
+  let ourChks = ourChks' -- ++ recChks
   -- Recursively accumulate checks on arguments below top level
   (belowIdcs, belowChks) <- mapAccumLM checkRtc'' idcs call
   (belowIdcs,)
@@ -266,8 +278,12 @@ domToTel :: Dom (a, Type) -> Telescope
 domToTel = theTel . telView' . snd . unDom
 
 -- Check a type is erased and at top level; in this case, it should be checked.
-checkTopLevelErased :: Dom (a, Type) -> C Bool
-checkTopLevelErased = ((DODropped ==) <$>) . compileDom . (snd <$>)
+checkTopLevelErased :: Dom Type -> C Bool
+checkTopLevelErased = ((DODropped ==) <$>) . compileDom
+
+-- Convenience variant for Dom (a, Type)
+checkTopLevelErased' :: Dom (a, Type) -> C Bool
+checkTopLevelErased' = checkTopLevelErased . (snd <$>)
 
 -- Create binds from declarations except when empty
 binds :: [Hs.Decl ()] -> Maybe (Hs.Binds ())
@@ -296,7 +312,6 @@ findDecInstances t =
 createGuardExp :: Dom (a, Type) -> Telescope -> C (Maybe (Hs.Exp ()))
 createGuardExp dom telUpTo = addContext telUpTo $ do
   dec <- decify $ snd $ unDom dom
-  reportSDoc "" 1 $ prettyTCM dec
   liftTCM (findDecInstances dec) >>= mapM (compileTerm dec)
 
 -- from GHC.Utils.Monad
