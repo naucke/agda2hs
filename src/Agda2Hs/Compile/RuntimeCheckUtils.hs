@@ -187,32 +187,34 @@ checkRtc tel name success = do
 checkRtc' :: NameIndices -> Telescope -> C (NameIndices, RtcResult')
 checkRtc' idcs tel = do
   -- Partition out arguments that are erased and at top level (those we will attempt to check)
-  (topLevelErased, call) <- partitionM (checkTopLevelErased' . fst) $ zip doms telsUpTo
+  (topLevelErased, call) <- partitionM (checkTopLevelErased' . (\(d, _, _) -> d)) $ zip3 doms telsUpTo telsUpToIncluding
 
-  -- slightly awkward extract of record types in arguments, their types, and their erased field qnames
+  -- slightly awkward extract of record types in arguments, their types,
+  -- telescope up to and including (!) them, and their erased field QNames
   -- TODO consider zip instead
-  let defTTQNames = [((te, ty), q) | (ty, te@(Def q _)) <- map (ap (,) unEl . snd . unDom . fst) call]
-  defTermsDefs <- (\(tt, q) -> (tt,) . theDef <$> getConstInfo q) `mapM` defTTQNames
-  let recTTFields = [(tt, _recFields d) | (tt, RecordDefn d) <- defTermsDefs]
-  recTTFieldsTypes <-
-    (\(tt, qs) -> (tt,) <$> mapM (\q -> (unDom q,) . (defType <$>) <$> mapM getConstInfo q) qs)
-      `mapM` recTTFields
-  recTTErasedFields <-
-    (\(tt, qs) -> (tt,) . map fst <$> filterM (checkTopLevelErased . snd) qs) `mapM` recTTFieldsTypes
+  let defTeTyTel = map (\(ty, _, tel) -> let te = snd $ unDom ty in (unEl te, te, tel)) call
+      defTTTQNames = [(ttt, q) | ttt@(Def q _, _, _) <- defTeTyTel]
+  defTermsDefs <- (\(ttt, q) -> (ttt,) . theDef <$> getConstInfo q) `mapM` defTTTQNames
+  let recTTTFields = [(ttt, _recFields d) | (ttt, RecordDefn d) <- defTermsDefs]
+  recTTTFieldsTypes <-
+    (\(ttt, qs) -> (ttt,) <$> mapM (\q -> (unDom q,) . (defType <$>) <$> mapM getConstInfo q) qs)
+      `mapM` recTTTFields
+  recTTTErasedFields <-
+    (\(ttt, qs) -> (ttt,) . map fst <$> filterM (checkTopLevelErased . snd) qs) `mapM` recTTTFieldsTypes
 
-  -- XXX super unsure about the ProjOrigin
-  applied <- (\((te, ty), qs) -> projectTyped te ty ProjPostfix `mapM` qs) `mapM` recTTErasedFields
-  let erasedRecFields = [t | Just (_, _, t) <- concat applied]
+  applied <-
+    (\((te, ty, tel), qs) -> (((,tel) <$>) . projectTyped te ty ProjPostfix) `mapM` qs)
+    `mapM` recTTTErasedFields
+  let erasedRecFields = [(t, tel) | (Just (_, _, t), tel) <- concat applied]
   reportSDoc "" 1 $ prettyTCM erasedRecFields
 
-  -- XXX these tels should prob come in order but try this for now
-  -- recChks <- addContext tel $ mapM (uncurry createGuardExp) erasedRecFields
-  -- reportSDoc "" 1 $ text $ show recChks
+  recChks <- uncurry createGuardExp `mapM` erasedRecFields
+  reportSDoc "" 1 $ text $ show recChks
 
-  ourChks' <- uncurry (createGuardExp . snd . unDom) `mapM` topLevelErased
-  let ourChks = ourChks' -- ++ recChks
+  ourChks' <- (\(d, t, _) -> createGuardExp (snd $ unDom d) t) `mapM` topLevelErased
+  let ourChks = ourChks' ++ recChks
   -- Recursively accumulate checks on arguments below top level
-  (belowIdcs, belowChks) <- mapAccumLM checkRtc'' idcs call
+  (belowIdcs, belowChks) <- mapAccumLM checkRtc'' idcs $ map (\(d, t, _) -> (d, t)) call
   (belowIdcs,)
     <$> if not (all isJust belowChks && all isJust ourChks)
       then return Uncheckable'
@@ -226,8 +228,9 @@ checkRtc' idcs tel = do
               else return Checkable' {..}
   where
     doms = telToList tel
-    telSplit tele = map (\i -> fst $ splitTelescopeAt i tele) [0 ..]
-    telsUpTo = telSplit tel
+    telSplit tele = map $ \i -> fst $ splitTelescopeAt i tele
+    telsUpTo = telSplit tel [0 ..]
+    telsUpToIncluding = telSplit tel [1 ..]
 
 -- Check a single type for runtime checkability.
 -- Accumulates on name indices for `go` function and `a` argument.
@@ -308,7 +311,10 @@ findDecInstances t =
 createGuardExp :: Type -> Telescope -> C (Maybe (Hs.Exp ()))
 createGuardExp ty telUpTo = addContext telUpTo $ do
   dec <- decify ty
-  liftTCM (findDecInstances dec) >>= mapM (compileTerm dec)
+  reportSDoc "" 1 $ prettyTCM dec
+  res <- liftTCM $ findDecInstances dec
+  reportSDoc "" 1 $ "have res?" <+> prettyTCM res
+  compileTerm dec `mapM` res
 
 -- from GHC.Utils.Monad
 mapAccumLM :: (Monad m, Traversable t) => (acc -> x -> m (acc, y)) -> acc -> t x -> m (acc, t y)
