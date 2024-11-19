@@ -21,7 +21,7 @@ import Agda2Hs.Config ( checkConfig )
 import Agda2Hs.Compile.Types
 import Agda2Hs.Render
 
-import Paths_agda2hs ( version )
+import Paths_agda2hs ( version, getDataFileName )
 
 
 -- | Agda2Hs default config
@@ -31,6 +31,7 @@ defaultOptions = Options
   , optOutDir     = Nothing
   , optConfigFile = Nothing
   , optExtensions = []
+  , optRtc        = False
   , optPrelude    = PreludeOpts False Nothing []
     -- by default the Prelude is imported explicitly
   , optRewrites   = defaultSpecialRules
@@ -49,8 +50,10 @@ configOpt src opts = return opts { optConfigFile = Just src }
 extensionOpt :: String -> Flag Options
 extensionOpt ext opts = return opts { optExtensions = Hs.parseExtension ext : optExtensions opts }
 
+rtcOpt :: Flag Options
+rtcOpt opts = return opts { optRtc = True }
 
-backend :: Backend' Options Options ModuleEnv ModuleRes (CompiledDef, CompileOutput)
+backend :: Backend' Options Options ModuleEnv ModuleRes (RtcDefs, CompileOutput)
 backend = Backend'
   { backendName           = "agda2hs"
   , backendVersion        = Just (showVersion version)
@@ -64,6 +67,9 @@ backend = Backend'
           "Write Haskell code to DIR. (default: project root)"
       , Option ['X'] [] (ReqArg extensionOpt "EXTENSION")
           "Enable Haskell language EXTENSION. Affects parsing of Haskell code in FOREIGN blocks."
+      , Option [] ["runtime-check"] (NoArg rtcOpt)
+          "Enable runtime checking of erased arguments. \
+          \Hides constructs with undecidable erased arguments away."
       , Option [] ["config"] (ReqArg configOpt "FILE")
           "Provide additional configuration to agda2hs with a YAML file."
       ]
@@ -87,8 +93,15 @@ isInteractive = do
   return $ not $ null i
 
 main = do
-  -- Issue #201: disable backend when run in interactive mode
-  isInt <- isInteractive
-  if isInt
-    then runAgda [Backend backend{isEnabled = const False}]
-    else runAgda [Backend backend]
+  args <- getArgs
+
+  -- Issue #370: `agda2hs locate` will print out the path to the prelude agda-lib file
+  if args == ["locate"] then
+    putStrLn =<< getDataFileName "agda2hs.agda-lib"
+  else do
+    -- Issue #201: disable backend when run in interactive mode
+    isInt <- isInteractive
+
+    if isInt
+      then runAgda [Backend backend{isEnabled = const False}]
+      else runAgda [Backend backend]

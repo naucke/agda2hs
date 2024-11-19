@@ -9,17 +9,19 @@ import Control.Monad.State ( put, modify )
 
 import Data.Maybe ( isJust )
 import qualified Data.Map as M
+import Data.List ( isPrefixOf )
 
 import qualified Language.Haskell.Exts as Hs
 
 import Agda.Compiler.Backend hiding ( Args )
+import Agda.Interaction.BasicOps ( parseName )
 
 import Agda.Syntax.Common
 import qualified Agda.Syntax.Concrete.Name as C
 import Agda.Syntax.Internal
 import Agda.Syntax.Position ( noRange )
 import Agda.Syntax.Scope.Base
-import Agda.Syntax.Scope.Monad ( bindVariable, freshConcreteName, isDatatypeModule )
+import Agda.Syntax.Scope.Monad ( bindVariable, freshConcreteName, isDatatypeModule, resolveName )
 import Agda.Syntax.Common.Pretty ( prettyShow )
 import qualified Agda.Syntax.Common.Pretty as P
 
@@ -37,9 +39,11 @@ import Agda.TypeChecking.Substitute ( Subst, TelV(TelV), Apply(..) )
 import Agda.TypeChecking.Telescope ( telView )
 
 import Agda.Utils.Lens ( (<&>) )
+import qualified Agda.Utils.List1 as List1
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Singleton
+import Agda.Utils.Tuple ( (-*-) )
 
 import AgdaInternals
 import Agda2Hs.AgdaUtils ( (~~) )
@@ -60,6 +64,8 @@ primModules =
   , "Haskell.Law"
   ]
 
+isPrimModule :: Hs.ModuleName () -> Bool
+isPrimModule mod = any (`isPrefixOf` pp mod) primModules
 
 concatUnzip :: [([a], [b])] -> ([a], [b])
 concatUnzip = (concat *** concat) . unzip
@@ -151,6 +157,18 @@ isErasedBaseType x = orM
   , isJust <$> isSizeType b             -- Size
   ]
   where b = El __DUMMY_SORT__ x
+
+hasCompilePragma :: QName -> C Bool
+hasCompilePragma q = processPragma q <&> \case
+  NoPragma{} -> False
+  InlinePragma{} -> True
+  DefaultPragma{} -> True
+  ClassPragma{} -> True
+  ExistingClassPragma{} -> True
+  UnboxPragma{} -> True
+  TransparentPragma{} -> True
+  NewTypePragma{} -> True
+  DerivePragma{} -> True
 
 -- Exploits the fact that the name of the record type and the name of the record module are the
 -- same, including the unique name ids.
@@ -267,10 +285,9 @@ checkInstance u = do
     checkInstanceElims = mapM_ checkInstanceElim
 
     checkInstanceElim :: Elim -> C ()
-    checkInstanceElim (Apply v) = case getHiding v of
-      Instance{} -> checkInstance $ unArg v
-      Hidden     -> return ()
-      NotHidden  -> return ()
+    checkInstanceElim (Apply v) =
+      when (isInstance v && usableQuantity v) $
+        checkInstance $ unArg v
     checkInstanceElim IApply{} = illegalInstance
     checkInstanceElim (Proj _ f) =
       unlessM (isInstance . defArgInfo <$> getConstInfo f) illegalInstance
@@ -322,10 +339,16 @@ checkValidConName x = unless (validConName x) $ genericDocError =<< do
   text "Invalid name for Haskell constructor: " <+> text (Hs.prettyPrint x)
 
 tellImport :: Import -> C ()
-tellImport imp = tell $ CompileOutput [imp] []
+tellImport imp = tell $ CompileOutput [imp] [] [] []
 
 tellExtension :: Hs.KnownExtension -> C ()
-tellExtension pr = tell $ CompileOutput [] [pr]
+tellExtension pr = tell $ CompileOutput [] [pr] [] []
+
+tellNoErased :: String -> C ()
+tellNoErased er = tell $ CompileOutput [] [] [er] []
+
+tellAllCheckable :: QName -> C ()
+tellAllCheckable chk = tell $ CompileOutput [] [] [] [chk]
 
 tellUnboxedTuples :: Hs.Boxed -> C ()
 tellUnboxedTuples Hs.Boxed = return ()
@@ -357,7 +380,7 @@ checkFixityLevel name (Related lvl) =
                          <+> text "for operator"   <+> prettyTCM name
     else pure (Just (round lvl))
 
-maybePrependFixity :: QName -> Fixity -> C [Hs.Decl ()] -> C [Hs.Decl ()]
+maybePrependFixity :: QName -> Fixity -> C RtcDecls -> C RtcDecls
 maybePrependFixity n f comp | f /= noFixity = do
   hsLvl <- checkFixityLevel n (fixityLevel f)
   let x = hsName $ prettyShow $ qnameName n
@@ -365,7 +388,8 @@ maybePrependFixity n f comp | f /= noFixity = do
         NonAssoc   -> Hs.AssocNone ()
         LeftAssoc  -> Hs.AssocLeft ()
         RightAssoc -> Hs.AssocRight ()
-  (Hs.InfixDecl () hsAssoc hsLvl [Hs.VarOp () x]:) <$> comp
+  let head = (Hs.InfixDecl () hsAssoc hsLvl [Hs.VarOp () x]:)
+  (head <$>) <$> comp
 maybePrependFixity n f comp = comp
 
 
@@ -389,3 +413,25 @@ checkNoAsPatterns = \case
 
 noWriteImports :: C a -> C a
 noWriteImports = local $ \e -> e { writeImports = False }
+
+testResolveStringName :: String -> C (Maybe QName)
+testResolveStringName s = do
+  cqname <- liftTCM $ parseName noRange s
+  rname <- liftTCM $ resolveName cqname
+  case rname of
+    DefinedName _ aname _ -> return $ Just $ anameName aname
+    _ -> return Nothing
+
+resolveStringName :: String -> C QName
+resolveStringName s = do
+  testResolveStringName s >>= \case
+    Just aname -> return aname
+    Nothing -> genericDocError =<< text ("Couldn't find " ++ s)
+
+-- Check if runtime checks should be emitted, i.e. the feature is
+-- enabled and the name is not in the trusted computing base.
+-- This is not included in RuntimeCheckUtils.hs for dependency reasons.
+emitsRtc :: QName -> C Bool
+emitsRtc qname = do
+  topName <- prettyTCM $ List1.head $ mnameToList1 $ qnameModule qname
+  asks $ (show topName /= "Haskell" &&) . rtc
