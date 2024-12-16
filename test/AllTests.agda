@@ -181,4 +181,8 @@ import CustomTuples
 import ProjectionLike
 import FunCon
 import Issue308
+
+import RuntimeCheckCallFeatures
+import RuntimeCheckUseCases
+import RuntimeCheckAutoImport
 #-}
